@@ -14,7 +14,7 @@ const GRAVE_COUNT = PUMPKIN_COUNT;
 const PLAYER_RADIUS = 0.35;
 const OBJ_TREE_R = 0.6;
 const OBJ_PUMP_R = 0.45;
-const OBJ_GRAVE_R = 0.5; // collider aprox para cruz
+const OBJ_GRAVE_R = 0.5;
 const FOG_DENSITY = 0.028;
 const VR_WALK_SPEED = 5.5;
 const VR_STRAFE_SPEED = 4.8;
@@ -23,7 +23,7 @@ const ARC_SPEED = 7.5;
 const ARC_GRAVITY = 9.8;
 const MAX_SLOPE_DEG = 45;
 const WORLD_RADIUS = WORLD_SIZE * 0.5 - 1.0;
-const PUMPKIN_AREA = 80; // para verlas todas
+const PUMPKIN_AREA = 80;
 const HDRI_LOCAL = 'assets/hdr/moonless_golf_1k.hdr';
 const HDRI_FALLBACK = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/moonless_golf_1k.hdr';
 
@@ -56,7 +56,6 @@ scene.add(player);
 /** ========= IBL / HDRI ========= */
 const pmremGen = new THREE.PMREMGenerator(renderer);
 pmremGen.compileEquirectangularShader();
-
 async function setHDRI(url) {
   const hdr = await new Promise((res, rej) => new RGBELoader().load(url, (t)=>res(t), undefined, rej));
   const env = pmremGen.fromEquirectangular(hdr).texture;
@@ -70,17 +69,17 @@ setHDRI(HDRI_LOCAL).catch(()=> setHDRI(HDRI_FALLBACK).catch(e=>console.warn('Sin
 const hemiLight = new THREE.HemisphereLight(0x8fb2ff, 0x0a0c10, 0.35);
 scene.add(hemiLight);
 
-/** ========= CIELO + LUNA (sin “flasheo”) ========= */
+/** ========= CIELO + LUNA (robusto para XR) ========= */
+// Skydome con gradiente
 const skyGeo = new THREE.SphereGeometry(1200, 48, 24);
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
-  depthTest: false,   // <- clave
+  depthTest: false,
   fog: false,
   uniforms: {
     topColor:      { value: new THREE.Color(0x0a1f35) },
     bottomColor:   { value: new THREE.Color(0x050910) },
-    starIntensity: { value: 1.8 }
   },
   vertexShader: /* glsl */`
     varying vec3 vDir;
@@ -93,31 +92,44 @@ const skyMat = new THREE.ShaderMaterial({
     varying vec3 vDir;
     uniform vec3 topColor;
     uniform vec3 bottomColor;
-    uniform float starIntensity;
-
-    float hash(vec3 p){ return fract(sin(dot(p, vec3(17.1, 127.1, 311.7))) * 43758.5453); }
-
     void main(){
       float t = smoothstep(-0.2, 0.8, vDir.y);
       vec3 col = mix(bottomColor, topColor, t);
-
-      float h = hash(floor(vDir * 200.0));
-      if (h > 0.995) col += vec3(1.4) * starIntensity;
-
       gl_FragColor = vec4(col, 1.0);
     }
   `
 });
 const skyMesh = new THREE.Mesh(skyGeo, skyMat);
-skyMesh.renderOrder = -1;
+skyMesh.renderOrder = -2; // siempre al fondo
 scene.add(skyMesh);
 
-// Luna visible
+// Estrellas como Points (sin depth test / sin fog / sin culling)
+const starCount = 3000;
+const starPositions = new Float32Array(starCount * 3);
+for (let i = 0; i < starCount; i++) {
+  const r = 900 + Math.random() * 300;
+  const a = Math.random() * Math.PI * 2;
+  const b = Math.acos(2 * Math.random() - 1);
+  starPositions[i*3+0] = r * Math.sin(b) * Math.cos(a);
+  starPositions[i*3+1] = r * Math.cos(b);
+  starPositions[i*3+2] = r * Math.sin(b) * Math.sin(a);
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+const starMat = new THREE.PointsMaterial({ size: 1.0, sizeAttenuation: true, color: 0xffffff, fog: false });
+const starField = new THREE.Points(starGeo, starMat);
+starField.matrixAutoUpdate = false;
+starField.frustumCulled = false;
+starField.renderOrder = -1;
+starMat.depthTest = false;
+scene.add(starField);
+
+// Luna visible SIEMPRE
 const moonTex = new THREE.TextureLoader().load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/moon_1024.jpg');
-const moonMat = new THREE.MeshBasicMaterial({ map: moonTex, fog: false });
+const moonMat = new THREE.MeshBasicMaterial({ map: moonTex, fog: false, depthTest: false });
 const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(6, 48, 48), moonMat);
 moonMesh.position.set(0, 140, -80);
-moonMesh.renderOrder = 0;
+moonMesh.renderOrder = 2; // por encima de todo el entorno
 scene.add(moonMesh);
 
 // Luz de luna
@@ -130,7 +142,7 @@ moonLight.shadow.camera.far = 220;
 scene.add(moonLight);
 
 /** ========= MURO (bajo) ========= */
-const wallHeight = 8;
+const wallHeight = 6;
 const wallGeo = new THREE.CylinderGeometry(WORLD_RADIUS + 0.5, WORLD_RADIUS + 0.5, wallHeight, 64, 1, true);
 const wallMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, fog: false });
 const wallMesh = new THREE.Mesh(wallGeo, wallMat);
@@ -197,7 +209,6 @@ scene.add(terrain);
 
 /** ========= RAYCAST / UTIL ========= */
 const raycaster = new THREE.Raycaster();
-
 function getTerrainHitRay(origin, dir, far=500){
   raycaster.set(origin, dir);
   raycaster.far = far;
@@ -256,51 +267,44 @@ for (let i=0;i<TREE_COUNT;i++){
   addTree(x, z, 0.8 + Math.random()*1.8);
 }
 
-/** ========= AUDIO (tintineo + viento procedural) ========= */
+/** ========= AUDIO (bosque + viento mp3) ========= */
 const listener = new THREE.AudioListener();
 camera.add(listener);
 const audioLoader = new THREE.AudioLoader();
+
 let chimeBuffer = null;
+let windBuffer = null;
+
 audioLoader.load('assets/audio/chime.mp3', (buf)=> chimeBuffer = buf);
+audioLoader.load('assets/audio/wind.mp3',  (buf)=> windBuffer = buf);
 
-// Viento nocturno (WebAudio procedural)
-let windStarted = false;
-let windGain = null;
-function initWind(){
-  if (windStarted) return;
-  windStarted = true;
+let windSfx = null;
+let forestSfx = null;
 
+function startAmbientAudio(){
   const ctx = listener.context;
-  const dur = 3.0;
-  const buffer = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
-  const data = buffer.getChannelData(0);
 
-  // White noise -> simple pinkish via cumulative filter
-  let b0=0, b1=0, b2=0;
-  for (let i=0;i<data.length;i++){
-    const white = Math.random()*2-1;
-    b0 = 0.997 * b0 + 0.003 * white;
-    b1 = 0.985 * b1 + 0.015 * white;
-    b2 = 0.950 * b2 + 0.050 * white;
-    data[i] = (b0 + b1 + b2) / 3;
+  if (!forestSfx) {
+    forestSfx = new THREE.Audio(listener);
+    forestSfx.setLoop(true);
+    forestSfx.setVolume(0.35);
+    // usamos el <audio id="ambient"> para bosque, si existe
+    if (ambientEl) {
+      // sincronizar usando media element source
+      try {
+        const srcNode = ctx.createMediaElementSource(ambientEl);
+        srcNode.connect(listener.getInput());
+      } catch {}
+    }
   }
 
-  const src = ctx.createBufferSource();
-  src.buffer = buffer;
-  src.loop = true;
-
-  const lp = ctx.createBiquadFilter();
-  lp.type = 'lowpass';
-  lp.frequency.value = 800;
-
-  windGain = ctx.createGain();
-  windGain.gain.value = 0.18; // volumen base
-
-  src.connect(lp);
-  lp.connect(windGain);
-  windGain.connect(listener.getInput());
-
-  src.start(0);
+  if (windBuffer && !windSfx) {
+    windSfx = new THREE.Audio(listener);
+    windSfx.setBuffer(windBuffer);
+    windSfx.setLoop(true);
+    windSfx.setVolume(0.28);
+    windSfx.play();
+  }
 }
 
 /** ========= CALABAZAS + PARTÍCULAS ========= */
@@ -323,7 +327,7 @@ function makeJackFaceTexture(size=512){
   const tex=new THREE.CanvasTexture(cvs); tex.needsUpdate=true; return tex;
 }
 
-// Partículas de celebración
+// Partículas
 const particleSystems = [];
 function spawnParticles(pos){
   const COUNT = 160;
@@ -348,7 +352,7 @@ function spawnParticles(pos){
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.setAttribute('life', new THREE.BufferAttribute(life, 1));
 
-  const mat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 1.0, fog: false });
+  const mat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 1.0, fog: false, depthTest: false });
   const points = new THREE.Points(geo, mat);
   points.userData = { age: 0, geo, mat };
   scene.add(points);
@@ -370,10 +374,6 @@ function updateParticles(dt){
       pos.array[idx+0] += vel.array[idx+0]*dt;
       pos.array[idx+1] += vel.array[idx+1]*dt;
       pos.array[idx+2] += vel.array[idx+2]*dt;
-
-      const l = life.array[j];
-      const alpha = Math.max(0, 1.0 - (ps.userData.age / l));
-      ps.userData.mat.opacity = alpha;
     }
     pos.needsUpdate = true;
 
@@ -382,6 +382,8 @@ function updateParticles(dt){
       ps.geometry.dispose();
       ps.material.dispose();
       particleSystems.splice(i,1);
+    } else {
+      ps.userData.mat.opacity = 1.0 - (ps.userData.age / 1.8);
     }
   }
 }
@@ -433,9 +435,9 @@ for (let i=0;i<PUMPKIN_COUNT;i++){
 }
 if (hudTotal) hudTotal.textContent = String(PUMPKIN_COUNT);
 
-/** ========= TUMBAS (cruz de piedra con textura) ========= */
+/** ========= TUMBAS (con textura de piedra) ========= */
 const graveColliders = [];
-const stoneTex = loadTex('assets/textures/stone/stone_diffuse.jpg'); // <-- usa la textura dummy
+const stoneTex = loadTex('assets/textures/stone/stone_diffuse.jpg');
 
 function addGrave(x, z){
   const y = getTerrainHeight(x, z);
@@ -520,10 +522,10 @@ controllerRight.addEventListener('selectend', ()=>{
   }
 });
 
-// Audio ambiente + viento al entrar a VR
+// Audio ambiente + viento al entrar a VR (tras gesto del usuario)
 renderer.xr.addEventListener('sessionstart', async ()=>{
-  try { ambientEl.volume = 0.45; await ambientEl.play(); } catch(e){ console.warn('Audio bloqueado:', e); }
-  initWind();
+  try { if (ambientEl) { ambientEl.volume = 0.4; await ambientEl.play(); } } catch(e){ console.warn('Audio bosque bloqueado:', e); }
+  startAmbientAudio();
 });
 
 /** ========= LOCOMOCIÓN (stick) ========= */
@@ -552,7 +554,6 @@ function vrGamepadMove(dt){
 
 /** ========= TELEPORT ========= */
 const arcPointsBuf = new Float32Array(ARC_STEPS*3);
-
 function segmentIntersectTerrain(a,b){
   const dir = new THREE.Vector3().subVectors(b,a);
   const len = dir.length(); if (!len) return null; dir.normalize();
@@ -563,7 +564,6 @@ function segmentIntersectTerrain(a,b){
   n.transformDirection(terrain.matrixWorld);
   return { point: h.point.clone(), faceNormal: n.normalize() };
 }
-
 function updateTeleportArc(){
   if (!arcLine.visible) return;
   teleportValid = false;
@@ -648,11 +648,11 @@ function resolveCollisions(curr, next){
         hitCount++; if (hudHit) hudHit.textContent = String(hitCount);
 
         // sonido
-        if (chimeBuffer){ const sfx = new THREE.Audio(listener); sfx.setBuffer(chimeBuffer); sfx.setVolume(0.8); sfx.play(); }
+        if (chimeBuffer){ const sfx = new THREE.Audio(listener); sfx.setBuffer(chimeBuffer); sfx.setLoop(false); sfx.setVolume(0.8); sfx.play(); }
         // color naranja -> rojo
         const m = pumpkin.userData.mat; m.color.set(0xff3a3a); m.emissive = new THREE.Color(0xff5a5a); m.emissiveIntensity = 0.6;
 
-        // partículas llamativas
+        // partículas
         spawnParticles(pumpkin.position.clone().add(new THREE.Vector3(0, 0.4, 0)));
       }
     }
@@ -670,18 +670,16 @@ renderer.setAnimationLoop(()=>{
     updateTeleportArc();
   }
 
-  // velas de calabaza
+  // Mantener cielo y estrellas centrados en el jugador (evita parpadeos/clipping en XR)
+  skyMesh.position.copy(player.position);
+  starField.position.copy(player.position);
+  moonMesh.position.set(player.position.x, player.position.y + 140, player.position.z - 80);
+
+  // velas
   const t = performance.now()*0.001;
   for (const g of pumpkins) g.userData.animate?.(t);
 
-  // partículas
   updateParticles(dt);
-
-  // modulación lenta del viento
-  if (windGain){
-    const pulse = 0.16 + 0.04 * Math.sin(performance.now()*0.0007) + 0.02 * Math.sin(performance.now()*0.0013);
-    windGain.gain.setTargetAtTime(pulse, listener.context.currentTime, 0.25);
-  }
 
   renderer.render(scene, camera);
 });
