@@ -31,7 +31,7 @@ const HDRI_FALLBACK = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/moon
 const hudTotal = document.getElementById('totalPumpkins');
 const hudHit   = document.getElementById('hitPumpkins');
 
-/** ========= RENDERER / SCENE / CAMERA ========= */
+/** ========= RENDERER / SCENES / CAMERA ========= */
 const canvas = document.getElementById('scene');
 const ambientEl = document.getElementById('ambient');
 
@@ -41,12 +41,18 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.xr.enabled = true;
+renderer.autoClear = true; // limpiamos entre escenas manualmente en el loop
 
+// Escena principal
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x06101a);
 scene.fog = new THREE.FogExp2(0x06101a, FOG_DENSITY);
 
-// Player + cámara
+// Escena de fondo (cielo/estrellas/luna)
+const bgScene = new THREE.Scene(); // sin niebla
+const bgCam = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 5000);
+
+// Cámara del jugador (escena principal)
 const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 500);
 const player = new THREE.Group();
 player.position.set(0, 1.6, 3);
@@ -60,8 +66,7 @@ async function setHDRI(url) {
   const hdr = await new Promise((res, rej) => new RGBELoader().load(url, (t)=>res(t), undefined, rej));
   const env = pmremGen.fromEquirectangular(hdr).texture;
   scene.environment = env;
-  hdr.dispose();
-  pmremGen.dispose();
+  hdr.dispose(); pmremGen.dispose();
 }
 setHDRI(HDRI_LOCAL).catch(()=> setHDRI(HDRI_FALLBACK).catch(e=>console.warn('Sin HDRI:', e)));
 
@@ -69,17 +74,17 @@ setHDRI(HDRI_LOCAL).catch(()=> setHDRI(HDRI_FALLBACK).catch(e=>console.warn('Sin
 const hemiLight = new THREE.HemisphereLight(0x8fb2ff, 0x0a0c10, 0.35);
 scene.add(hemiLight);
 
-/** ========= CIELO + LUNA (robusto para XR) ========= */
-// Skydome con gradiente
-const skyGeo = new THREE.SphereGeometry(1200, 48, 24);
+/** ========= CIELO / ESTRELLAS / LUNA en bgScene ========= */
+// Skydome shader
+const skyGeo = new THREE.SphereGeometry(2000, 48, 24);
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
   depthTest: false,
   fog: false,
   uniforms: {
-    topColor:      { value: new THREE.Color(0x0a1f35) },
-    bottomColor:   { value: new THREE.Color(0x050910) },
+    topColor:    { value: new THREE.Color(0x0a1f35) },
+    bottomColor: { value: new THREE.Color(0x050910) }
   },
   vertexShader: /* glsl */`
     varying vec3 vDir;
@@ -100,14 +105,15 @@ const skyMat = new THREE.ShaderMaterial({
   `
 });
 const skyMesh = new THREE.Mesh(skyGeo, skyMat);
-skyMesh.renderOrder = -2; // siempre al fondo
-scene.add(skyMesh);
+skyMesh.renderOrder = -2;
+skyMesh.frustumCulled = false;
+bgScene.add(skyMesh);
 
-// Estrellas como Points (sin depth test / sin fog / sin culling)
-const starCount = 3000;
+// Estrellas con Points (más visibles en XR)
+const starCount = 3500;
 const starPositions = new Float32Array(starCount * 3);
 for (let i = 0; i < starCount; i++) {
-  const r = 900 + Math.random() * 300;
+  const r = 1400 + Math.random() * 400;
   const a = Math.random() * Math.PI * 2;
   const b = Math.acos(2 * Math.random() - 1);
   starPositions[i*3+0] = r * Math.sin(b) * Math.cos(a);
@@ -116,25 +122,31 @@ for (let i = 0; i < starCount; i++) {
 }
 const starGeo = new THREE.BufferGeometry();
 starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-const starMat = new THREE.PointsMaterial({ size: 1.0, sizeAttenuation: true, color: 0xffffff, fog: false });
+const starMat = new THREE.PointsMaterial({
+  size: 2.2,
+  sizeAttenuation: false, // ¡clave en VR!
+  color: 0xffffff,
+  fog: false,
+  depthTest: false,
+  transparent: true,
+  opacity: 0.95
+});
 const starField = new THREE.Points(starGeo, starMat);
+starField.renderOrder = -1;
 starField.matrixAutoUpdate = false;
 starField.frustumCulled = false;
-starField.renderOrder = -1;
-starMat.depthTest = false;
-scene.add(starField);
+bgScene.add(starField);
 
-// Luna visible SIEMPRE
+// Luna (bgScene)
 const moonTex = new THREE.TextureLoader().load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/moon_1024.jpg');
 const moonMat = new THREE.MeshBasicMaterial({ map: moonTex, fog: false, depthTest: false });
-const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(6, 48, 48), moonMat);
-moonMesh.position.set(0, 140, -80);
-moonMesh.renderOrder = 2; // por encima de todo el entorno
-scene.add(moonMesh);
+const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(12, 48, 48), moonMat);
+moonMesh.renderOrder = 1;
+moonMesh.frustumCulled = false;
+bgScene.add(moonMesh);
 
-// Luz de luna
+// Luz de luna (escena principal)
 const moonLight = new THREE.DirectionalLight(0xcfe2ff, 1.25);
-moonLight.position.copy(moonMesh.position.clone().normalize().multiplyScalar(60));
 moonLight.castShadow = true;
 moonLight.shadow.mapSize.set(2048, 2048);
 moonLight.shadow.camera.near = 0.5;
@@ -147,7 +159,7 @@ const wallGeo = new THREE.CylinderGeometry(WORLD_RADIUS + 0.5, WORLD_RADIUS + 0.
 const wallMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, fog: false });
 const wallMesh = new THREE.Mesh(wallGeo, wallMat);
 wallMesh.position.y = wallHeight / 2;
-wallMesh.renderOrder = 1;
+wallMesh.renderOrder = 5;
 scene.add(wallMesh);
 
 /** ========= PERLIN NOISE & TERRENO PBR ========= */
@@ -210,8 +222,7 @@ scene.add(terrain);
 /** ========= RAYCAST / UTIL ========= */
 const raycaster = new THREE.Raycaster();
 function getTerrainHitRay(origin, dir, far=500){
-  raycaster.set(origin, dir);
-  raycaster.far = far;
+  raycaster.set(origin, dir); raycaster.far = far;
   const hit = raycaster.intersectObject(terrain, false)[0];
   return hit || null;
 }
@@ -224,8 +235,7 @@ function clampToWorld(v){
   if (r > WORLD_RADIUS - PLAYER_RADIUS){
     const ang = Math.atan2(v.z, v.x);
     const rr = WORLD_RADIUS - PLAYER_RADIUS;
-    v.x = Math.cos(ang) * rr;
-    v.z = Math.sin(ang) * rr;
+    v.x = Math.cos(ang) * rr; v.z = Math.sin(ang) * rr;
   }
   return v;
 }
@@ -274,30 +284,23 @@ const audioLoader = new THREE.AudioLoader();
 
 let chimeBuffer = null;
 let windBuffer = null;
-
 audioLoader.load('assets/audio/chime.mp3', (buf)=> chimeBuffer = buf);
 audioLoader.load('assets/audio/wind.mp3',  (buf)=> windBuffer = buf);
 
 let windSfx = null;
-let forestSfx = null;
-
 function startAmbientAudio(){
   const ctx = listener.context;
-
-  if (!forestSfx) {
-    forestSfx = new THREE.Audio(listener);
-    forestSfx.setLoop(true);
-    forestSfx.setVolume(0.35);
-    // usamos el <audio id="ambient"> para bosque, si existe
-    if (ambientEl) {
-      // sincronizar usando media element source
-      try {
-        const srcNode = ctx.createMediaElementSource(ambientEl);
-        srcNode.connect(listener.getInput());
-      } catch {}
-    }
+  // bosque por <audio id="ambient">
+  if (ambientEl) {
+    try {
+      const srcNode = ctx.createMediaElementSource(ambientEl);
+      srcNode.connect(listener.getInput());
+      ambientEl.loop = true;
+      ambientEl.volume = 0.4;
+      ambientEl.play().catch(()=>{});
+    } catch {}
   }
-
+  // viento mp3
   if (windBuffer && !windSfx) {
     windSfx = new THREE.Audio(listener);
     windSfx.setBuffer(windBuffer);
@@ -307,7 +310,7 @@ function startAmbientAudio(){
   }
 }
 
-/** ========= CALABAZAS + PARTÍCULAS ========= */
+/** ========= CALABAZAS + PARTÍCULAS EXPLOSIVAS ========= */
 const pumpkins = [];
 const pumpkinColliders = [];
 
@@ -327,10 +330,10 @@ function makeJackFaceTexture(size=512){
   const tex=new THREE.CanvasTexture(cvs); tex.needsUpdate=true; return tex;
 }
 
-// Partículas
+// Partículas: aditivo + más conteo/velocidad
 const particleSystems = [];
 function spawnParticles(pos){
-  const COUNT = 160;
+  const COUNT = 350;
   const geo = new THREE.BufferGeometry();
   const positions = new Float32Array(COUNT*3);
   const velocities = new Float32Array(COUNT*3);
@@ -340,19 +343,42 @@ function spawnParticles(pos){
   for (let i=0;i<COUNT;i++){
     const i3 = i*3;
     positions[i3+0]=pos.x; positions[i3+1]=pos.y; positions[i3+2]=pos.z;
-    const dir = new THREE.Vector3(Math.random()*2-1, Math.random()*1.5, Math.random()*2-1).normalize();
-    const speed = 3 + Math.random()*3.5;
+
+    // distribución esférica con explosión fuerte
+    const u = Math.random();
+    const v = Math.random();
+    const theta = 2*Math.PI*u;
+    const phi = Math.acos(2*v - 1);
+    const dir = new THREE.Vector3(
+      Math.sin(phi)*Math.cos(theta),
+      Math.cos(phi),
+      Math.sin(phi)*Math.sin(theta)
+    );
+    const speed = 5.0 + Math.random()*7.0; // más rápido
     velocities[i3+0]=dir.x*speed; velocities[i3+1]=dir.y*speed; velocities[i3+2]=dir.z*speed;
-    const hue = Math.random(); const c = new THREE.Color().setHSL(hue, 1.0, 0.55);
+
+    const hue = Math.random();
+    const c = new THREE.Color().setHSL(hue, 1.0, 0.55);
     colors[i3+0]=c.r; colors[i3+1]=c.g; colors[i3+2]=c.b;
-    life[i]=1.0 + Math.random()*0.6;
+
+    life[i]=1.2 + Math.random()*0.8;
   }
+
   geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   geo.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   geo.setAttribute('life', new THREE.BufferAttribute(life, 1));
 
-  const mat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 1.0, fog: false, depthTest: false });
+  const mat = new THREE.PointsMaterial({
+    size: 0.12,
+    vertexColors: true,
+    transparent: true,
+    opacity: 1.0,
+    fog: false,
+    depthTest: true,
+    blending: THREE.AdditiveBlending // ¡explosivo!
+  });
+
   const points = new THREE.Points(geo, mat);
   points.userData = { age: 0, geo, mat };
   scene.add(points);
@@ -370,20 +396,24 @@ function updateParticles(dt){
 
     for (let j=0;j<count;j++){
       const idx = j*3;
-      vel.array[idx+1] -= 4.5 * dt;
+      // gravedad más marcada
+      vel.array[idx+1] -= 7.5 * dt;
       pos.array[idx+0] += vel.array[idx+0]*dt;
       pos.array[idx+1] += vel.array[idx+1]*dt;
       pos.array[idx+2] += vel.array[idx+2]*dt;
     }
     pos.needsUpdate = true;
 
-    if (ps.userData.age > 1.8){
+    // fade suave
+    const L = 2.2;
+    const alpha = Math.max(0, 1.0 - (ps.userData.age / L));
+    ps.userData.mat.opacity = alpha;
+
+    if (ps.userData.age > L){
       scene.remove(ps);
       ps.geometry.dispose();
       ps.material.dispose();
       particleSystems.splice(i,1);
-    } else {
-      ps.userData.mat.opacity = 1.0 - (ps.userData.age / 1.8);
     }
   }
 }
@@ -424,8 +454,6 @@ function addPumpkin(x, z) {
   pumpkins.push(g);
   pumpkinColliders.push({ x, z, r: OBJ_PUMP_R, idx: pumpkins.length - 1 });
 }
-
-// Distribución visible
 for (let i=0;i<PUMPKIN_COUNT;i++){
   const angle = (i / PUMPKIN_COUNT) * Math.PI * 2;
   const radius = 10 + Math.random() * PUMPKIN_AREA;
@@ -438,22 +466,14 @@ if (hudTotal) hudTotal.textContent = String(PUMPKIN_COUNT);
 /** ========= TUMBAS (con textura de piedra) ========= */
 const graveColliders = [];
 const stoneTex = loadTex('assets/textures/stone/stone_diffuse.jpg');
-
 function addGrave(x, z){
   const y = getTerrainHeight(x, z);
-  const stone = new THREE.MeshStandardMaterial({
-    color: 0xffffff,
-    map: stoneTex,
-    roughness: 1.0,
-    metalness: 0.0
-  });
+  const stone = new THREE.MeshStandardMaterial({ color: 0xffffff, map: stoneTex, roughness: 1.0, metalness: 0.0 });
 
-  // Pedestal redondeado
   const base = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, 0.25, 16), stone);
   base.position.set(0, y + 0.125, 0);
   base.castShadow = true; base.receiveShadow = true;
 
-  // Cruz (vertical + horizontal)
   const vertical = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.2, 0.15), stone);
   vertical.position.set(0, y + 0.25 + 0.6, 0);
   vertical.castShadow = true; vertical.receiveShadow = true;
@@ -462,7 +482,6 @@ function addGrave(x, z){
   horizontal.position.set(0, y + 0.25 + 0.75, 0);
   horizontal.castShadow = true; horizontal.receiveShadow = true;
 
-  // “Roturas”
   const chipGeo = new THREE.BoxGeometry(0.08, 0.12, 0.16);
   const chip1 = new THREE.Mesh(chipGeo, stone); chip1.position.set(0.18, y + 0.25 + 0.2, 0.08);
   const chip2 = new THREE.Mesh(chipGeo, stone); chip2.position.set(-0.2, y + 0.25 + 0.95, -0.07);
@@ -522,7 +541,7 @@ controllerRight.addEventListener('selectend', ()=>{
   }
 });
 
-// Audio ambiente + viento al entrar a VR (tras gesto del usuario)
+// Audio ambiente + viento al entrar a VR
 renderer.xr.addEventListener('sessionstart', async ()=>{
   try { if (ambientEl) { ambientEl.volume = 0.4; await ambientEl.play(); } } catch(e){ console.warn('Audio bosque bloqueado:', e); }
   startAmbientAudio();
@@ -546,7 +565,6 @@ function vrGamepadMove(dt){
 
     next = clampToWorld(next);
     next.y = getTerrainHeight(next.x, next.z) + 1.6;
-
     next = resolveCollisions(player.position, next);
     player.position.copy(next);
   }
@@ -647,12 +665,9 @@ function resolveCollisions(curr, next){
         pumpkin.userData.touched = true;
         hitCount++; if (hudHit) hudHit.textContent = String(hitCount);
 
-        // sonido
-        if (chimeBuffer){ const sfx = new THREE.Audio(listener); sfx.setBuffer(chimeBuffer); sfx.setLoop(false); sfx.setVolume(0.8); sfx.play(); }
-        // color naranja -> rojo
+        if (chimeBuffer){ const sfx = new THREE.Audio(listener); sfx.setBuffer(chimeBuffer); sfx.setLoop(false); sfx.setVolume(0.9); sfx.play(); }
         const m = pumpkin.userData.mat; m.color.set(0xff3a3a); m.emissive = new THREE.Color(0xff5a5a); m.emissiveIntensity = 0.6;
 
-        // partículas
         spawnParticles(pumpkin.position.clone().add(new THREE.Vector3(0, 0.4, 0)));
       }
     }
@@ -670,17 +685,28 @@ renderer.setAnimationLoop(()=>{
     updateTeleportArc();
   }
 
-  // Mantener cielo y estrellas centrados en el jugador (evita parpadeos/clipping en XR)
-  skyMesh.position.copy(player.position);
-  starField.position.copy(player.position);
-  moonMesh.position.set(player.position.x, player.position.y + 140, player.position.z - 80);
+  // Mantener el fondo centrado en el jugador
+  const p = player.position;
+  skyMesh.position.copy(p);
+  starField.position.copy(p);
 
-  // velas
+  // Coloca la luna arriba/adelante del jugador y alinea luz
+  const moonOffset = new THREE.Vector3(0, 140, -120);
+  moonMesh.position.copy(p).add(moonOffset);
+  moonLight.position.copy(moonMesh.position.clone().normalize().multiplyScalar(60));
+
+  // Velas y partículas
   const t = performance.now()*0.001;
   for (const g of pumpkins) g.userData.animate?.(t);
-
   updateParticles(dt);
 
+  // Render: primero fondo, luego mundo
+  renderer.clear();
+  // Usamos la misma proyección que la cámara principal
+  bgCam.projectionMatrix.copy(camera.projectionMatrix);
+  bgCam.matrixWorld.copy(camera.matrixWorld);
+  bgCam.matrixWorldInverse.copy(camera.matrixWorldInverse);
+  renderer.render(bgScene, bgCam);
   renderer.render(scene, camera);
 });
 
