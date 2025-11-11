@@ -1,0 +1,46 @@
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #03040a;
+  color: #e6e9f5;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial;
+}
+#scene {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* Botón VR (de three.js) */
+.vr-button {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 9;
+}
+
+/* HUD superior derecho */
+#hud {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  gap: 8px;
+  z-index: 10;
+}
+.badge {
+  display: inline-flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(6, 8, 15, 0.55);
+  border: 1px solid rgba(255,255,255,0.15);
+  backdrop-filter: blur(6px);
+  font-size: 13px;
+}
+.badge span { opacity: 0.85; }
+.badge b { font-size: 14px; }

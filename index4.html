@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <title>Bosque nocturno VR • Colisiones + UI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="style4.css" />
+
+    <!-- Importmap: Three.js + Addons (ESM) -->
+    <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.1/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.1/examples/jsm/"
+      }
+    }
+    </script>
+  </head>
+  <body>
+    <!-- UI: contadores -->
+    <div id="hud">
+      <div class="badge"><span>Total calabazas:</span> <b id="totalPumpkins">0</b></div>
+      <div class="badge"><span>Tocadas:</span> <b id="hitPumpkins">0</b></div>
+    </div>
+
+    <!-- Audio ambiente (se inicia al entrar a VR) -->
+    <audio id="ambient" src="assets/audio/forest_night.mp3" preload="auto" loop></audio>
+
+    <canvas id="scene"></canvas>
+    <script type="module" src="main4.js"></script>
+  </body>
+</html>
