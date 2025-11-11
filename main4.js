@@ -5,27 +5,27 @@ import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFa
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
 /** ========= CONFIG ========= */
-const WORLD_SIZE = 260;           // tamaño del mundo (plano)
-const TERRAIN_RES = 256;          // subdivisiones del terreno
-const TERRAIN_MAX_H = 2.6;        // altura máxima (relieve)
-const TREE_COUNT = 520;           // número de árboles
-const PUMPKIN_COUNT = 56;         // número de calabazas
-const PLAYER_RADIUS = 0.35;       // colisión "cuerpo" del jugador
-const OBJ_TREE_R = 0.6;           // radio aproximado tronco/copa inferior
-const OBJ_PUMP_R = 0.45;          // radio calabaza
+const WORLD_SIZE = 260;
+const TERRAIN_RES = 256;
+const TERRAIN_MAX_H = 2.6;
+const TREE_COUNT = 520;
+const PUMPKIN_COUNT = 56;
+const GRAVE_COUNT = PUMPKIN_COUNT;
+const PLAYER_RADIUS = 0.35;
+const OBJ_TREE_R = 0.6;
+const OBJ_PUMP_R = 0.45;
+const OBJ_GRAVE_R = 0.5; // collider aprox para cruz
 const FOG_DENSITY = 0.028;
-const VR_WALK_SPEED = 5.5;        // velocidad (ajustada)
+const VR_WALK_SPEED = 5.5;
 const VR_STRAFE_SPEED = 4.8;
-const ARC_STEPS = 40;             // puntos arco teleport
-const ARC_SPEED = 7.5;            // velocidad inicial arco
-const ARC_GRAVITY = 9.8;          // gravedad arco
-const MAX_SLOPE_DEG = 45;         // pendiente máxima para aterrizar
-const WORLD_RADIUS = WORLD_SIZE * 0.5 - 1.0; // límite jugable
+const ARC_STEPS = 40;
+const ARC_SPEED = 7.5;
+const ARC_GRAVITY = 9.8;
+const MAX_SLOPE_DEG = 45;
+const WORLD_RADIUS = WORLD_SIZE * 0.5 - 1.0;
+const PUMPKIN_AREA = 80; // para verlas todas
 const HDRI_LOCAL = 'assets/hdr/moonless_golf_1k.hdr';
 const HDRI_FALLBACK = 'https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/moonless_golf_1k.hdr';
-
-// Distribución visible de calabazas/tumbas
-const PUMPKIN_AREA = 80; // radio de distribución para asegurar visibilidad
 
 /** ========= DOM / UI ========= */
 const hudTotal = document.getElementById('totalPumpkins');
@@ -46,8 +46,8 @@ const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x06101a);
 scene.fog = new THREE.FogExp2(0x06101a, FOG_DENSITY);
 
-// Player (grupo) + cámara
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 400);
+// Player + cámara
+const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 500);
 const player = new THREE.Group();
 player.position.set(0, 1.6, 3);
 player.add(camera);
@@ -58,23 +58,25 @@ const pmremGen = new THREE.PMREMGenerator(renderer);
 pmremGen.compileEquirectangularShader();
 
 async function setHDRI(url) {
-  const tex = await new Promise((res, rej) => new RGBELoader().load(url, (t)=>res(t), undefined, rej));
-  const env = pmremGen.fromEquirectangular(tex).texture;
+  const hdr = await new Promise((res, rej) => new RGBELoader().load(url, (t)=>res(t), undefined, rej));
+  const env = pmremGen.fromEquirectangular(hdr).texture;
   scene.environment = env;
-  tex.dispose();
+  hdr.dispose();
   pmremGen.dispose();
 }
-setHDRI(HDRI_LOCAL).catch(() => setHDRI(HDRI_FALLBACK).catch(e => console.warn('Sin HDRI (fallback también falló):', e)));
+setHDRI(HDRI_LOCAL).catch(()=> setHDRI(HDRI_FALLBACK).catch(e=>console.warn('Sin HDRI:', e)));
 
-/** ========= ILUMINACIÓN ========= */
+/** ========= LUCES ========= */
 const hemiLight = new THREE.HemisphereLight(0x8fb2ff, 0x0a0c10, 0.35);
 scene.add(hemiLight);
 
-/** ========= CIELO ESTRELLADO + LUNA ========= */
+/** ========= CIELO + LUNA (sin “flasheo”) ========= */
 const skyGeo = new THREE.SphereGeometry(1200, 48, 24);
 const skyMat = new THREE.ShaderMaterial({
   side: THREE.BackSide,
   depthWrite: false,
+  depthTest: false,   // <- clave
+  fog: false,
   uniforms: {
     topColor:      { value: new THREE.Color(0x0a1f35) },
     bottomColor:   { value: new THREE.Color(0x050910) },
@@ -100,73 +102,68 @@ const skyMat = new THREE.ShaderMaterial({
       vec3 col = mix(bottomColor, topColor, t);
 
       float h = hash(floor(vDir * 200.0));
-      if (h > 0.995) col += vec3(1.5) * starIntensity;
+      if (h > 0.995) col += vec3(1.4) * starIntensity;
 
       gl_FragColor = vec4(col, 1.0);
     }
   `
 });
-const sky = new THREE.Mesh(skyGeo, skyMat);
-scene.add(sky);
+const skyMesh = new THREE.Mesh(skyGeo, skyMat);
+skyMesh.renderOrder = -1;
+scene.add(skyMesh);
 
-// Luna visible + luz de luna
+// Luna visible
 const moonTex = new THREE.TextureLoader().load('https://raw.githubusercontent.com/mrdoob/three.js/dev/examples/textures/moon_1024.jpg');
-const moonMat = new THREE.MeshBasicMaterial({ map: moonTex, color: 0xffffff });
+const moonMat = new THREE.MeshBasicMaterial({ map: moonTex, fog: false });
 const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(6, 48, 48), moonMat);
 moonMesh.position.set(0, 140, -80);
+moonMesh.renderOrder = 0;
 scene.add(moonMesh);
 
-const moonLight = new THREE.DirectionalLight(0xcfe2ff, 1.2);
+// Luz de luna
+const moonLight = new THREE.DirectionalLight(0xcfe2ff, 1.25);
 moonLight.position.copy(moonMesh.position.clone().normalize().multiplyScalar(60));
 moonLight.castShadow = true;
 moonLight.shadow.mapSize.set(2048, 2048);
 moonLight.shadow.camera.near = 0.5;
-moonLight.shadow.camera.far = 200;
+moonLight.shadow.camera.far = 220;
 scene.add(moonLight);
 
-/** ========= MURO CILÍNDRICO (límite visual) ========= */
-const wallGeo = new THREE.CylinderGeometry(WORLD_RADIUS + 0.5, WORLD_RADIUS + 0.5, 60, 64, 1, true);
-const wallMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide });
+/** ========= MURO (bajo) ========= */
+const wallHeight = 8;
+const wallGeo = new THREE.CylinderGeometry(WORLD_RADIUS + 0.5, WORLD_RADIUS + 0.5, wallHeight, 64, 1, true);
+const wallMat = new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, fog: false });
 const wallMesh = new THREE.Mesh(wallGeo, wallMat);
-wallMesh.position.y = 30;
+wallMesh.position.y = wallHeight / 2;
+wallMesh.renderOrder = 1;
 scene.add(wallMesh);
 
-/** ========= PERLIN NOISE ========= */
+/** ========= PERLIN NOISE & TERRENO PBR ========= */
 function makePerlin(seed = 1337) {
   const p = new Uint8Array(512);
-  for (let i = 0; i < 256; i++) p[i] = i;
-  let n, q;
-  for (let i = 255; i > 0; i--) {
-    n = Math.floor((seed = (seed * 16807) % 2147483647) / 2147483647 * (i + 1));
-    q = p[i]; p[i] = p[n]; p[n] = q;
-  }
-  for (let i = 0; i < 256; i++) p[256 + i] = p[i];
-
-  const grad = (h, x, y) => {
-    switch (h & 3) { case 0: return  x + y; case 1: return -x + y; case 2: return  x - y; default: return -x - y; }
-  };
-  const fade = t => t*t*t*(t*(t*6.0-15.0)+10.0);
-  const lerp = (a,b,t) => a + t*(b-a);
-
-  return function noise(x, y) {
-    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
-    x -= Math.floor(x); y -= Math.floor(y);
-    const u = fade(x), v = fade(y);
-    const A = p[X] + Y, B = p[X+1] + Y;
-    return lerp( lerp(grad(p[A], x, y), grad(p[B], x-1.0, y), u),
-                 lerp(grad(p[A+1], x, y-1.0), grad(p[B+1], x-1.0, y-1.0), u), v );
+  for (let i=0;i<256;i++) p[i]=i;
+  let n,q;
+  for (let i=255;i>0;i--) { n = Math.floor((seed = (seed * 16807) % 2147483647) / 2147483647 * (i + 1)); q = p[i]; p[i]=p[n]; p[n]=q; }
+  for (let i=0;i<256;i++) p[256+i]=p[i];
+  const grad=(h,x,y)=>{ switch(h&3){case 0:return x+y;case 1:return -x+y;case 2:return x-y;default:return -x-y;} };
+  const fade=t=>t*t*t*(t*(t*6.-15.)+10.);
+  const lerp=(a,b,t)=>a+t*(b-a);
+  return function noise(x,y){
+    const X=Math.floor(x)&255,Y=Math.floor(y)&255; x-=Math.floor(x); y-=Math.floor(y);
+    const u=fade(x), v=fade(y), A=p[X]+Y, B=p[X+1]+Y;
+    return lerp( lerp(grad(p[A],x,y), grad(p[B],x-1.,y), u),
+                 lerp(grad(p[A+1],x,y-1.), grad(p[B+1],x-1.,y-1.), u), v );
   };
 }
 const noise2D = makePerlin(2025);
 
-/** ========= TERRENO PBR ========= */
 const terrainGeo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, TERRAIN_RES, TERRAIN_RES);
 terrainGeo.rotateX(-Math.PI / 2);
 const tPos = terrainGeo.attributes.position;
-for (let i = 0; i < tPos.count; i++) {
-  const x = tPos.getX(i), z = tPos.getZ(i);
+for (let i=0;i<tPos.count;i++){
+  const x=tPos.getX(i), z=tPos.getZ(i);
   const h = noise2D(x*0.02, z*0.02)*0.6 + noise2D(x*0.05, z*0.05)*0.25 + noise2D(x*0.1, z*0.1)*0.1;
-  tPos.setY(i, h * TERRAIN_MAX_H);
+  tPos.setY(i, h*TERRAIN_MAX_H);
 }
 tPos.needsUpdate = true;
 terrainGeo.computeVertexNormals();
@@ -186,7 +183,7 @@ const groundRough  = loadTex('assets/textures/ground/ground_roughness.jpg');
 const groundAO     = loadTex('assets/textures/ground/ground_ao.jpg');
 
 const terrainMat = new THREE.MeshStandardMaterial({
-  color: new THREE.Color(0x3a2a1c), // tinte café oscuro
+  color: new THREE.Color(0x3a2a1c),
   map: groundColor,
   normalMap: groundNormal,
   roughnessMap: groundRough,
@@ -224,7 +221,6 @@ function clampToWorld(v){
 
 /** ========= ÁRBOLES (colliders) ========= */
 const treeColliders = [];
-
 function addTree(x, z, scale=1){
   const trunk = new THREE.Mesh(
     new THREE.CylinderGeometry(0.12*scale, 0.22*scale, 2.6*scale, 8),
@@ -260,7 +256,54 @@ for (let i=0;i<TREE_COUNT;i++){
   addTree(x, z, 0.8 + Math.random()*1.8);
 }
 
-/** ========= CALABAZAS (visibles y dentro del área) ========= */
+/** ========= AUDIO (tintineo + viento procedural) ========= */
+const listener = new THREE.AudioListener();
+camera.add(listener);
+const audioLoader = new THREE.AudioLoader();
+let chimeBuffer = null;
+audioLoader.load('assets/audio/chime.mp3', (buf)=> chimeBuffer = buf);
+
+// Viento nocturno (WebAudio procedural)
+let windStarted = false;
+let windGain = null;
+function initWind(){
+  if (windStarted) return;
+  windStarted = true;
+
+  const ctx = listener.context;
+  const dur = 3.0;
+  const buffer = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+
+  // White noise -> simple pinkish via cumulative filter
+  let b0=0, b1=0, b2=0;
+  for (let i=0;i<data.length;i++){
+    const white = Math.random()*2-1;
+    b0 = 0.997 * b0 + 0.003 * white;
+    b1 = 0.985 * b1 + 0.015 * white;
+    b2 = 0.950 * b2 + 0.050 * white;
+    data[i] = (b0 + b1 + b2) / 3;
+  }
+
+  const src = ctx.createBufferSource();
+  src.buffer = buffer;
+  src.loop = true;
+
+  const lp = ctx.createBiquadFilter();
+  lp.type = 'lowpass';
+  lp.frequency.value = 800;
+
+  windGain = ctx.createGain();
+  windGain.gain.value = 0.18; // volumen base
+
+  src.connect(lp);
+  lp.connect(windGain);
+  windGain.connect(listener.getInput());
+
+  src.start(0);
+}
+
+/** ========= CALABAZAS + PARTÍCULAS ========= */
 const pumpkins = [];
 const pumpkinColliders = [];
 
@@ -280,36 +323,82 @@ function makeJackFaceTexture(size=512){
   const tex=new THREE.CanvasTexture(cvs); tex.needsUpdate=true; return tex;
 }
 
-// Audio tintineo
-const listener = new THREE.AudioListener();
-camera.add(listener);
-const audioLoader = new THREE.AudioLoader();
-let chimeBuffer = null;
-audioLoader.load('assets/audio/chime.mp3', (buf)=> chimeBuffer = buf);
+// Partículas de celebración
+const particleSystems = [];
+function spawnParticles(pos){
+  const COUNT = 160;
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(COUNT*3);
+  const velocities = new Float32Array(COUNT*3);
+  const colors = new Float32Array(COUNT*3);
+  const life = new Float32Array(COUNT);
+
+  for (let i=0;i<COUNT;i++){
+    const i3 = i*3;
+    positions[i3+0]=pos.x; positions[i3+1]=pos.y; positions[i3+2]=pos.z;
+    const dir = new THREE.Vector3(Math.random()*2-1, Math.random()*1.5, Math.random()*2-1).normalize();
+    const speed = 3 + Math.random()*3.5;
+    velocities[i3+0]=dir.x*speed; velocities[i3+1]=dir.y*speed; velocities[i3+2]=dir.z*speed;
+    const hue = Math.random(); const c = new THREE.Color().setHSL(hue, 1.0, 0.55);
+    colors[i3+0]=c.r; colors[i3+1]=c.g; colors[i3+2]=c.b;
+    life[i]=1.0 + Math.random()*0.6;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('velocity', new THREE.BufferAttribute(velocities, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.setAttribute('life', new THREE.BufferAttribute(life, 1));
+
+  const mat = new THREE.PointsMaterial({ size: 0.08, vertexColors: true, transparent: true, opacity: 1.0, fog: false });
+  const points = new THREE.Points(geo, mat);
+  points.userData = { age: 0, geo, mat };
+  scene.add(points);
+  particleSystems.push(points);
+}
+function updateParticles(dt){
+  for (let i=particleSystems.length-1;i>=0;i--){
+    const ps = particleSystems[i];
+    ps.userData.age += dt;
+    const geo = ps.userData.geo;
+    const pos = geo.getAttribute('position');
+    const vel = geo.getAttribute('velocity');
+    const life = geo.getAttribute('life');
+    const count = life.count;
+
+    for (let j=0;j<count;j++){
+      const idx = j*3;
+      vel.array[idx+1] -= 4.5 * dt;
+      pos.array[idx+0] += vel.array[idx+0]*dt;
+      pos.array[idx+1] += vel.array[idx+1]*dt;
+      pos.array[idx+2] += vel.array[idx+2]*dt;
+
+      const l = life.array[j];
+      const alpha = Math.max(0, 1.0 - (ps.userData.age / l));
+      ps.userData.mat.opacity = alpha;
+    }
+    pos.needsUpdate = true;
+
+    if (ps.userData.age > 1.8){
+      scene.remove(ps);
+      ps.geometry.dispose();
+      ps.material.dispose();
+      particleSystems.splice(i,1);
+    }
+  }
+}
 
 function addPumpkin(x, z) {
-  const y = getTerrainHeight(x, z) + 0.4; // levantar un poco
+  const y = getTerrainHeight(x, z) + 0.4;
   const emissiveMap = makeJackFaceTexture(512);
 
   const mat = new THREE.MeshStandardMaterial({
-    color: 0xff6a00,
-    roughness: 0.55,
-    metalness: 0.0,
-    emissive: 0xffa75a,
-    emissiveIntensity: 0.45,
-    emissiveMap
+    color: 0xff6a00, roughness: 0.55, metalness: 0.0,
+    emissive: 0xffa75a, emissiveIntensity: 0.45, emissiveMap
   });
 
-  const body = new THREE.Mesh(
-    new THREE.SphereGeometry(0.42, 32, 24).scale(1.25, 1.0, 1.1),
-    mat
-  );
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.42, 32, 24).scale(1.25, 1.0, 1.1), mat);
   body.castShadow = true; body.receiveShadow = true;
 
-  const stem = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.05, 0.07, 0.18, 8),
-    new THREE.MeshStandardMaterial({ color: 0x3b7a2a, roughness: 0.9 })
-  );
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.18, 8), new THREE.MeshStandardMaterial({ color: 0x3b7a2a, roughness: 0.9 }));
   stem.position.y = 0.45;
 
   const g = new THREE.Group();
@@ -334,57 +423,68 @@ function addPumpkin(x, z) {
   pumpkinColliders.push({ x, z, r: OBJ_PUMP_R, idx: pumpkins.length - 1 });
 }
 
-// Coloca PUMPKIN_COUNT calabazas distribuidas en radio visible
-for (let i = 0; i < PUMPKIN_COUNT; i++) {
+// Distribución visible
+for (let i=0;i<PUMPKIN_COUNT;i++){
   const angle = (i / PUMPKIN_COUNT) * Math.PI * 2;
   const radius = 10 + Math.random() * PUMPKIN_AREA;
   const x = Math.cos(angle) * radius;
   const z = Math.sin(angle) * radius;
-  addPumpkin(x, z);
+  addPumpkin(x,z);
 }
 if (hudTotal) hudTotal.textContent = String(PUMPKIN_COUNT);
 
-/** ========= TUMBAS (mismo número que calabazas) ========= */
-function addGrave(x, z) {
-  const y = getTerrainHeight(x, z);
+/** ========= TUMBAS (cruz de piedra con textura) ========= */
+const graveColliders = [];
+const stoneTex = loadTex('assets/textures/stone/stone_diffuse.jpg'); // <-- usa la textura dummy
 
-  const stoneMat = new THREE.MeshStandardMaterial({
-    color: 0x777777,
+function addGrave(x, z){
+  const y = getTerrainHeight(x, z);
+  const stone = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    map: stoneTex,
     roughness: 1.0,
     metalness: 0.0
   });
 
-  const base = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.2, 0.4), stoneMat);
-  base.position.y = y + 0.1;
+  // Pedestal redondeado
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, 0.25, 16), stone);
+  base.position.set(0, y + 0.125, 0);
+  base.castShadow = true; base.receiveShadow = true;
 
-  // Lápida con parte superior curva
-  const head = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.3, 0.3, 0.9, 16, 1, false, 0, Math.PI),
-    stoneMat
-  );
-  head.position.set(0, y + 0.65, 0);
-  head.rotation.x = Math.PI / 2;
+  // Cruz (vertical + horizontal)
+  const vertical = new THREE.Mesh(new THREE.BoxGeometry(0.35, 1.2, 0.15), stone);
+  vertical.position.set(0, y + 0.25 + 0.6, 0);
+  vertical.castShadow = true; vertical.receiveShadow = true;
 
-  const grave = new THREE.Group();
-  grave.add(base, head);
-  grave.position.set(x, 0, z);
+  const horizontal = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.25, 0.15), stone);
+  horizontal.position.set(0, y + 0.25 + 0.75, 0);
+  horizontal.castShadow = true; horizontal.receiveShadow = true;
 
-  // “Envejecida”
-  grave.rotation.y = (Math.random() - 0.5) * 0.8;
-  grave.rotation.z = (Math.random() - 0.5) * 0.1;
-  grave.scale.setScalar(0.9 + Math.random() * 0.3);
+  // “Roturas”
+  const chipGeo = new THREE.BoxGeometry(0.08, 0.12, 0.16);
+  const chip1 = new THREE.Mesh(chipGeo, stone); chip1.position.set(0.18, y + 0.25 + 0.2, 0.08);
+  const chip2 = new THREE.Mesh(chipGeo, stone); chip2.position.set(-0.2, y + 0.25 + 0.95, -0.07);
 
-  scene.add(grave);
+  const group = new THREE.Group();
+  group.add(base, vertical, horizontal, chip1, chip2);
+  group.position.set(x, 0, z);
+  group.rotation.y = (Math.random()-0.5)*0.6;
+  group.rotation.z = (Math.random()-0.5)*0.05;
+  const s = 0.9 + Math.random()*0.3;
+  group.scale.setScalar(s);
+
+  scene.add(group);
+  graveColliders.push({ x, z, r: OBJ_GRAVE_R * s });
 }
-for (let i = 0; i < PUMPKIN_COUNT; i++) {
-  const angle = (i / PUMPKIN_COUNT) * Math.PI * 2 + Math.random() * 0.5;
+for (let i=0;i<GRAVE_COUNT;i++){
+  const angle = (i / GRAVE_COUNT) * Math.PI * 2 + Math.random()*0.4;
   const radius = 15 + Math.random() * 60;
   const x = Math.cos(angle) * radius;
   const z = Math.sin(angle) * radius;
   addGrave(x, z);
 }
 
-/** ========= XR: CONTROLADORES + TELEPORT ========= */
+/** ========= VR: CONTROLADORES + TELEPORT ========= */
 const vrBtn = VRButton.createButton(renderer);
 vrBtn.classList.add('vr-button');
 document.body.appendChild(vrBtn);
@@ -395,46 +495,35 @@ scene.add(controllerLeft, controllerRight);
 
 const controllerModelFactory = new XRControllerModelFactory();
 const grip0 = renderer.xr.getControllerGrip(0);
-grip0.add(controllerModelFactory.createControllerModel(grip0));
-scene.add(grip0);
-
+grip0.add(controllerModelFactory.createControllerModel(grip0)); scene.add(grip0);
 const grip1 = renderer.xr.getControllerGrip(1);
-grip1.add(controllerModelFactory.createControllerModel(grip1));
-scene.add(grip1);
+grip1.add(controllerModelFactory.createControllerModel(grip1)); scene.add(grip1);
 
-// Arco parabólico + marcador
+// Arco + marcador
 const arcMatOK  = new THREE.LineBasicMaterial({ color: 0x7ad1ff, transparent:true, opacity:0.95 });
 const arcMatBAD = new THREE.LineBasicMaterial({ color: 0xff5a5a, transparent:true, opacity:0.95 });
 let arcMaterial = arcMatOK;
-
 const arcGeo = new THREE.BufferGeometry().setFromPoints(new Array(ARC_STEPS).fill(0).map(()=>new THREE.Vector3()));
-const arcLine = new THREE.Line(arcGeo, arcMaterial);
-arcLine.visible = false;
-scene.add(arcLine);
-
-const marker = new THREE.Mesh(
-  new THREE.RingGeometry(0.25,0.30,32),
-  new THREE.MeshBasicMaterial({ color:0x7ad1ff, transparent:true, opacity:0.9, side:THREE.DoubleSide })
-);
-marker.rotation.x = -Math.PI/2;
-marker.visible = false;
-scene.add(marker);
+const arcLine = new THREE.Line(arcGeo, arcMaterial); arcLine.visible=false; scene.add(arcLine);
+const marker = new THREE.Mesh(new THREE.RingGeometry(0.25,0.30,32), new THREE.MeshBasicMaterial({ color:0x7ad1ff, transparent:true, opacity:0.9, side:THREE.DoubleSide }));
+marker.rotation.x = -Math.PI/2; marker.visible=false; scene.add(marker);
 
 let teleportValid = false;
 const teleportPoint = new THREE.Vector3();
 
-controllerRight.addEventListener('selectstart', () => { arcLine.visible = true; marker.visible = true; });
-controllerRight.addEventListener('selectend',   () => {
-  arcLine.visible = false; marker.visible = false;
-  if (teleportValid) {
+controllerRight.addEventListener('selectstart', ()=>{ arcLine.visible=true; marker.visible=true; });
+controllerRight.addEventListener('selectend', ()=>{
+  arcLine.visible=false; marker.visible=false;
+  if (teleportValid){
     const clamped = clampToWorld(teleportPoint.clone());
     player.position.set(clamped.x, getTerrainHeight(clamped.x, clamped.z) + 1.6, clamped.z);
   }
 });
 
-// Audio ambiente al empezar VR
+// Audio ambiente + viento al entrar a VR
 renderer.xr.addEventListener('sessionstart', async ()=>{
-  try { ambientEl.volume = 0.45; await ambientEl.play(); } catch(e){ console.warn('Audio ambiente bloqueado:', e); }
+  try { ambientEl.volume = 0.45; await ambientEl.play(); } catch(e){ console.warn('Audio bloqueado:', e); }
+  initWind();
 });
 
 /** ========= LOCOMOCIÓN (stick) ========= */
@@ -444,7 +533,6 @@ function vrGamepadMove(dt){
     if (!src.gamepad) continue;
     let [x,y] = [src.gamepad.axes[2], src.gamepad.axes[3]];
     if (x===undefined || y===undefined){ x = src.gamepad.axes[0] ?? 0; y = src.gamepad.axes[1] ?? 0; }
-
     const dead=0.12; if (Math.abs(x)<dead) x=0; if (Math.abs(y)<dead) y=0; if (x===0 && y===0) continue;
 
     const forward = new THREE.Vector3(); camera.getWorldDirection(forward); forward.y=0; forward.normalize();
@@ -454,22 +542,20 @@ function vrGamepadMove(dt){
     next.addScaledVector(forward, -y * VR_WALK_SPEED * dt);
     next.addScaledVector(right,    x * VR_STRAFE_SPEED * dt);
 
-    // Clamp + altura terreno
     next = clampToWorld(next);
     next.y = getTerrainHeight(next.x, next.z) + 1.6;
 
-    // Colisiones (árboles, calabazas)
     next = resolveCollisions(player.position, next);
-
     player.position.copy(next);
   }
 }
 
-/** ========= TELEPORT: validar arco + NavMesh (terreno) ========= */
-const arcPointsBuf = new Float32Array(ARC_STEPS * 3);
+/** ========= TELEPORT ========= */
+const arcPointsBuf = new Float32Array(ARC_STEPS*3);
 
 function segmentIntersectTerrain(a,b){
-  const dir = new THREE.Vector3().subVectors(b,a); const len = dir.length(); if (!len) return null; dir.normalize();
+  const dir = new THREE.Vector3().subVectors(b,a);
+  const len = dir.length(); if (!len) return null; dir.normalize();
   raycaster.set(a, dir); raycaster.far = len + 0.01;
   const h = raycaster.intersectObject(terrain, false)[0];
   if (!h) return null;
@@ -487,7 +573,6 @@ function updateTeleportArc(){
 
   const pts = [];
   let hit = null;
-
   const v0 = dir.clone().multiplyScalar(ARC_SPEED);
   const g = new THREE.Vector3(0,-ARC_GRAVITY,0);
   let p = origin.clone(), v = v0.clone();
@@ -522,9 +607,8 @@ function updateTeleportArc(){
   }
 }
 
-/** ========= COLISIONES Y LÍMITES ========= */
+/** ========= COLISIONES Y EVENTOS ========= */
 let hitCount = 0;
-
 function resolveCollisions(curr, next){
   // Árboles
   for (const t of treeColliders){
@@ -537,7 +621,18 @@ function resolveCollisions(curr, next){
       next.x += nx * push; next.z += nz * push;
     }
   }
-  // Calabazas (también disparan el evento "tocada")
+  // Tumbas
+  for (const g of graveColliders){
+    const dx = next.x - g.x, dz = next.z - g.z;
+    const dist = Math.hypot(dx, dz);
+    const minD = PLAYER_RADIUS + g.r;
+    if (dist < minD){
+      const push = (minD - dist) + 1e-3;
+      const nx = dx / (dist || 1), nz = dz / (dist || 1);
+      next.x += nx * push; next.z += nz * push;
+    }
+  }
+  // Calabazas (+ evento)
   for (const p of pumpkinColliders){
     const dx = next.x - p.x, dz = next.z - p.z;
     const dist = Math.hypot(dx, dz);
@@ -552,26 +647,21 @@ function resolveCollisions(curr, next){
         pumpkin.userData.touched = true;
         hitCount++; if (hudHit) hudHit.textContent = String(hitCount);
 
-        // Sonido
-        if (chimeBuffer){
-          const sfx = new THREE.Audio(listener);
-          sfx.setBuffer(chimeBuffer); sfx.setVolume(0.7); sfx.play();
-        }
-        // Naranja -> Rojo
-        const m = pumpkin.userData.mat;
-        m.color.set(0xff3a3a);
-        m.emissive = new THREE.Color(0xff5a5a);
-        m.emissiveIntensity = 0.6;
+        // sonido
+        if (chimeBuffer){ const sfx = new THREE.Audio(listener); sfx.setBuffer(chimeBuffer); sfx.setVolume(0.8); sfx.play(); }
+        // color naranja -> rojo
+        const m = pumpkin.userData.mat; m.color.set(0xff3a3a); m.emissive = new THREE.Color(0xff5a5a); m.emissiveIntensity = 0.6;
+
+        // partículas llamativas
+        spawnParticles(pumpkin.position.clone().add(new THREE.Vector3(0, 0.4, 0)));
       }
     }
   }
-  // Mantener dentro del mundo
   return clampToWorld(next);
 }
 
 /** ========= LOOP ========= */
 const clock = new THREE.Clock();
-
 renderer.setAnimationLoop(()=>{
   const dt = Math.min(clock.getDelta(), 0.05);
 
@@ -580,9 +670,18 @@ renderer.setAnimationLoop(()=>{
     updateTeleportArc();
   }
 
-  // animación de velas en calabazas
+  // velas de calabaza
   const t = performance.now()*0.001;
   for (const g of pumpkins) g.userData.animate?.(t);
+
+  // partículas
+  updateParticles(dt);
+
+  // modulación lenta del viento
+  if (windGain){
+    const pulse = 0.16 + 0.04 * Math.sin(performance.now()*0.0007) + 0.02 * Math.sin(performance.now()*0.0013);
+    windGain.gain.setTargetAtTime(pulse, listener.context.currentTime, 0.25);
+  }
 
   renderer.render(scene, camera);
 });
